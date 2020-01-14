@@ -37,6 +37,7 @@ Usage of _output/linux/amd64/kube-rbac-proxy:
       --config-file string                          Configuration file to configure kube-rbac-proxy.
       --insecure-listen-address string              The address the kube-rbac-proxy HTTP server should listen on.
       --kubeconfig string                           Path to a kubeconfig file, specifying how to connect to the API server. If unset, in-cluster configuration will be used
+      --stale-cache-interval string	                The interval to keep auth request review result for in case of unconsciousness of apiserver (default 0)
       --log_backtrace_at traceLocation              when logging hits line file:N, emit a stack trace (default :0)
       --log_dir string                              If non-empty, write log files in this directory
       --logtostderr                                 log to standard error instead of files

@@ -17,6 +17,7 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -24,26 +25,13 @@ import (
 	"io/ioutil"
 	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 )
 
-func initTransport(upstreamCAFile string) (http.RoundTripper, error) {
-	if upstreamCAFile == "" {
-		return http.DefaultTransport, nil
-	}
-
-	rootPEM, err := ioutil.ReadFile(upstreamCAFile)
-	if err != nil {
-		return nil, fmt.Errorf("error reading upstream CA file: %v", err)
-	}
-
-	roots := x509.NewCertPool()
-	if ok := roots.AppendCertsFromPEM([]byte(rootPEM)); !ok {
-		return nil, errors.New("error parsing upstream CA certificate")
-	}
-
-	// http.Transport sourced from go 1.10.7
-	transport := &http.Transport{
+func initTransport(upstreamURL url.URL, upstreamCAFile string) (http.RoundTripper, url.URL, error) {
+	transport := http.Transport{
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: (&net.Dialer{
 			Timeout:   30 * time.Second,
@@ -54,8 +42,37 @@ func initTransport(upstreamCAFile string) (http.RoundTripper, error) {
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
-		TLSClientConfig:       &tls.Config{RootCAs: roots},
 	}
 
-	return transport, nil
+	if upstreamCAFile != "" {
+		rootPEM, err := ioutil.ReadFile(upstreamCAFile)
+		if err != nil {
+			return nil, upstreamURL, fmt.Errorf("error reading upstream CA file: %v", err)
+		}
+
+		roots := x509.NewCertPool()
+		if ok := roots.AppendCertsFromPEM([]byte(rootPEM)); !ok {
+			return nil, upstreamURL, errors.New("error parsing upstream CA certificate")
+		}
+		// http.Transport sourced from go 1.10.7
+		transport.TLSClientConfig = &tls.Config{RootCAs: roots}
+	}
+
+	if upstreamURL.Scheme == "unix" {
+		parts := strings.SplitN(upstreamURL.Path, ":", 2)
+		if len(parts) == 1 {
+			parts = append(parts, "/")
+		}
+		transport.DialContext = func(_ context.Context, _, _ string) (net.Conn, error) {
+			return net.Dial("unix", parts[0])
+		}
+
+		parsedURL, err := url.Parse("http://unix" + parts[1])
+		if err != nil {
+			return nil, upstreamURL, fmt.Errorf("error while deconding unix socket path url: %v", err)
+		}
+		upstreamURL = *parsedURL
+	}
+
+	return &transport, upstreamURL, nil
 }

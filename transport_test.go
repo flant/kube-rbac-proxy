@@ -17,11 +17,12 @@ package main
 
 import (
 	"net/http"
+	"net/url"
 	"testing"
 )
 
 func TestInitTransportWithDefault(t *testing.T) {
-	roundTripper, err := initTransport("")
+	roundTripper, _, err := initTransport(url.URL{}, "")
 	if err != nil {
 		t.Errorf("want err to be nil, but got %v", err)
 		return
@@ -32,7 +33,7 @@ func TestInitTransportWithDefault(t *testing.T) {
 }
 
 func TestInitTransportWithCustomCA(t *testing.T) {
-	roundTripper, err := initTransport("test/ca.pem")
+	roundTripper, _, err := initTransport(url.URL{}, "test/ca.pem")
 	if err != nil {
 		t.Errorf("want err to be nil, but got %v", err)
 		return
@@ -40,5 +41,16 @@ func TestInitTransportWithCustomCA(t *testing.T) {
 	transport := roundTripper.(*http.Transport)
 	if transport.TLSClientConfig.RootCAs == nil {
 		t.Error("expected root CA to be set, got nil")
+	}
+}
+
+func TestInitTransportWithUnixSocketURL(t *testing.T) {
+	_, upstreamURL, err := initTransport(url.URL{Scheme: "unix", Path: "/test:/test"}, "")
+	if err != nil {
+		t.Errorf("want err to be nil, but got %v", err)
+		return
+	}
+	if upstreamURL.String() != "http://unix/test" {
+		t.Errorf("expected spicific upstream url, got %s", upstreamURL.String())
 	}
 }

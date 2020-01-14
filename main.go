@@ -28,6 +28,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -56,9 +57,11 @@ type config struct {
 	upstream              string
 	upstreamForceH2C      bool
 	upstreamCAFile        string
+	excludePaths          []string
 	auth                  proxy.Config
 	tls                   tlsConfig
 	kubeconfigLocation    string
+	staleCacheTTL         time.Duration
 }
 
 type tlsConfig struct {
@@ -70,7 +73,17 @@ type tlsConfig struct {
 }
 
 type configfile struct {
-	AuthorizationConfig *authz.Config `json:"authorization,omitempty"`
+	ExcludePaths        []string     `json:"excludePaths,omitempty"`
+	Upstreams           []upstream   `json:"upstreams,omitempty"`
+	AuthorizationConfig authz.Config `json:"authorization,omitempty"`
+}
+
+type upstream struct {
+	AuthorizationConfig authz.Config `json:"authorization,omitempty"`
+	Path                string       `json:"path,omitempty"`
+	Upstream            string       `json:"upstream,omitempty"`
+	UpstreamCaFile      string       `json:"upstreamCaFile,omitempty"`
+	ExcludePaths        []string     `json:"excludePaths,omitempty"`
 }
 
 var versions = map[string]uint16{
@@ -84,6 +97,46 @@ func tlsVersion(versionName string) (uint16, error) {
 		return version, nil
 	}
 	return 0, fmt.Errorf("unknown tls version %q", versionName)
+}
+
+func parseConfigFile(configFileName string, upstreamFromConfig string, upstreamCaFile string) ([]upstream, []string, error) {
+	var upstreams []upstream
+	var b []byte
+
+	data := os.Getenv("KUBE_RBAC_PROXY_CONFIG")
+	if data != "" {
+		klog.Infof("Parsing configuration from environment variable KUBE_RBAC_PROXY_CONFIG: %s", configFileName)
+		b = []byte(data)
+	} else if configFileName != "" {
+		var err error
+		klog.Infof("Reading config file: %s", configFileName)
+		b, err = ioutil.ReadFile(configFileName)
+		if err != nil {
+			return upstreams, []string{}, fmt.Errorf("failed to read configuration file: %v", err)
+		}
+	} else {
+		upstreams = append(upstreams, upstream{AuthorizationConfig: authz.Config{}, Upstream: upstreamFromConfig, UpstreamCaFile: upstreamCaFile, Path: "/"})
+		return upstreams, []string{}, nil
+	}
+
+	configfile := configfile{}
+	err := yaml.Unmarshal(b, &configfile)
+	if err != nil {
+		return upstreams, []string{}, fmt.Errorf("failed to parse configuration file: %v", err)
+	}
+
+	if len(configfile.Upstreams) == 0 {
+		upstreams = append(upstreams, upstream{
+			AuthorizationConfig: configfile.AuthorizationConfig,
+			Upstream:            upstreamFromConfig,
+			UpstreamCaFile:      upstreamCaFile,
+			Path:                "/",
+		})
+		return upstreams, configfile.ExcludePaths, nil
+	}
+
+	upstreams = append(upstreams, configfile.Upstreams...)
+	return upstreams, configfile.ExcludePaths, nil
 }
 
 func main() {
@@ -113,6 +166,8 @@ func main() {
 	flagset.BoolVar(&cfg.upstreamForceH2C, "upstream-force-h2c", false, "Force h2c to communiate with the upstream. This is required when the upstream speaks h2c(http/2 cleartext - insecure variant of http/2) only. For example, go-grpc server in the insecure mode, such as helm's tiller w/o TLS, speaks h2c only")
 	flagset.StringVar(&cfg.upstreamCAFile, "upstream-ca-file", "", "The CA the upstream uses for TLS connection. This is required when the upstream uses TLS and its own CA certificate")
 	flagset.StringVar(&configFileName, "config-file", "", "Configuration file to configure kube-rbac-proxy.")
+	flagset.DurationVar(&cfg.tls.reloadInterval, "stale-cache-interval", 0*time.Minute, "The interval to keep auth request review result for in case of unconsciousness of apiserver.")
+	flagset.StringArrayVar(&cfg.excludePaths, "exclude-path", []string{}, "Path to skip authentication and authorizations checks for. May be necessary to describe liveness and readiness probe endpoints.")
 
 	// TLS flags
 	flagset.StringVar(&cfg.tls.certFile, "tls-cert-file", "", "File containing the default x509 Certificate for HTTPS. (CA cert, if any, concatenated after server cert)")
@@ -143,27 +198,11 @@ func main() {
 	flagset.Parse(os.Args[1:])
 	kcfg := initKubeConfig(cfg.kubeconfigLocation)
 
-	upstreamURL, err := url.Parse(cfg.upstream)
+	upstreams, exludePaths, err := parseConfigFile(configFileName, cfg.upstream, cfg.upstreamCAFile)
 	if err != nil {
-		klog.Fatalf("Failed to build parse upstream URL: %v", err)
+		klog.Fatalf("Failed to parse config file: %v", err)
 	}
-
-	if configFileName != "" {
-		klog.Infof("Reading config file: %s", configFileName)
-		b, err := ioutil.ReadFile(configFileName)
-		if err != nil {
-			klog.Fatalf("Failed to read resource-attribute file: %v", err)
-		}
-
-		configfile := configfile{}
-
-		err = yaml.Unmarshal(b, &configfile)
-		if err != nil {
-			klog.Fatalf("Failed to parse config file content: %v", err)
-		}
-
-		cfg.auth.Authorization = configfile.AuthorizationConfig
-	}
+	cfg.excludePaths = append(cfg.excludePaths, exludePaths...)
 
 	kubeClient, err := kubernetes.NewForConfig(kcfg)
 	if err != nil {
@@ -196,30 +235,52 @@ func main() {
 		klog.Fatalf("Failed to create authorizer: %v", err)
 	}
 
-	auth, err := proxy.New(kubeClient, cfg.auth, authorizer, authenticator)
+	var gr run.Group
 
-	if err != nil {
-		klog.Fatalf("Failed to create rbac-proxy: %v", err)
-	}
+	klog.Infof("Excluded paths: %v", cfg.excludePaths)
 
-	upstreamTransport, err := initTransport(cfg.upstreamCAFile)
-	if err != nil {
-		klog.Fatalf("Failed to set up upstream TLS connection: %v", err)
-	}
-
-	proxy := httputil.NewSingleHostReverseProxy(upstreamURL)
-	proxy.Transport = upstreamTransport
 	mux := http.NewServeMux()
-	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		ok := auth.Handle(w, req)
-		if !ok {
-			return
+	for _, upstreamConfig := range upstreams {
+		upstreamURL, err := url.Parse(upstreamConfig.Upstream)
+		if err != nil {
+			klog.Fatalf("Failed to build parse upstream URL: %v", err)
 		}
 
-		proxy.ServeHTTP(w, req)
-	}))
+		proxyConfig := proxy.Config{Authentication: cfg.auth.Authentication, Authorization: &upstreamConfig.AuthorizationConfig}
+		auth, err := proxy.New(kubeClient, *proxyConfig.DeepCopy(), authorizer, authenticator, cfg.staleCacheTTL)
 
-	var gr run.Group
+		if err != nil {
+			klog.Fatalf("Failed to create rbac-proxy: %v", err)
+		}
+
+		upstreamTransport, newURL, err := initTransport(*upstreamURL, upstreamConfig.UpstreamCaFile, cfg.upstreamForceH2C)
+		if err != nil {
+			klog.Fatalf("Failed to set up upstream TLS connection: %v", err)
+		}
+		upstreamURL = &newURL
+
+		reverseProxy := NewSingleHostReverseProxyWithRewrite(upstreamURL, upstreamConfig.Path)
+		reverseProxy.Transport = upstreamTransport
+
+		mux.Handle(upstreamConfig.Path, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			excludedPath := false
+			klog.V(10).Infof("Proxy URL requested: %s", req.URL.Path)
+			for _, excludePathFromConfig := range cfg.excludePaths {
+				if req.URL.Path == excludePathFromConfig {
+					excludedPath = true
+					break
+				}
+			}
+			if !excludedPath {
+				ok := auth.Handle(w, req)
+				if !ok {
+					return
+				}
+			}
+			reverseProxy.ServeHTTP(w, req)
+		}))
+		klog.Infof("Added upstream: path=%s, upstream=%s", upstreamConfig.Path, upstreamConfig.Upstream)
+	}
 	{
 		if cfg.secureListenAddress != "" {
 			srv := &http.Server{Handler: mux, TLSConfig: &tls.Config{}}
@@ -269,6 +330,7 @@ func main() {
 
 			srv.TLSConfig.CipherSuites = cipherSuiteIDs
 			srv.TLSConfig.MinVersion = version
+			srv.TLSConfig.ClientAuth = tls.RequestClientCert
 
 			if err := http2.ConfigureServer(srv, nil); err != nil {
 				klog.Fatalf("failed to configure http2 server: %v", err)
@@ -296,21 +358,6 @@ func main() {
 	}
 	{
 		if cfg.insecureListenAddress != "" {
-			if cfg.upstreamForceH2C {
-				// Force http/2 for connections to the upstream i.e. do not start with HTTP1.1 UPGRADE req to
-				// initialize http/2 session.
-				// See https://github.com/golang/go/issues/14141#issuecomment-219212895 for more context
-				proxy.Transport = &http2.Transport{
-					// Allow http schema. This doesn't automatically disable TLS
-					AllowHTTP: true,
-					// Do disable TLS.
-					// In combination with the schema check above. We could enforce h2c against the upstream server
-					DialTLS: func(netw, addr string, cfg *tls.Config) (net.Conn, error) {
-						return net.Dial(netw, addr)
-					},
-				}
-			}
-
 			srv := &http.Server{Handler: h2c.NewHandler(mux, &http2.Server{})}
 
 			l, err := net.Listen("tcp", cfg.insecureListenAddress)
@@ -365,4 +412,40 @@ func initKubeConfig(kcLocation string) *rest.Config {
 	}
 
 	return kubeConfig
+}
+
+func NewSingleHostReverseProxyWithRewrite(target *url.URL, path string) *httputil.ReverseProxy {
+	targetQuery := target.RawQuery
+	director := func(req *http.Request) {
+		req.URL.Scheme = target.Scheme
+		req.URL.Host = target.Host
+
+		req.URL.Path = singleJoiningSlash(target.Path, strings.TrimPrefix(req.URL.Path, path))
+		if !strings.HasSuffix(path, "/") {
+			req.URL.Path = strings.TrimSuffix(req.URL.Path, "/")
+		}
+
+		if targetQuery == "" || req.URL.RawQuery == "" {
+			req.URL.RawQuery = targetQuery + req.URL.RawQuery
+		} else {
+			req.URL.RawQuery = targetQuery + "&" + req.URL.RawQuery
+		}
+		if _, ok := req.Header["User-Agent"]; !ok {
+			req.Header.Set("User-Agent", "")
+		}
+		klog.V(4).Infof("Request URL: %s", req.URL.String())
+	}
+	return &httputil.ReverseProxy{Director: director}
+}
+
+func singleJoiningSlash(a, b string) string {
+	aslash := strings.HasSuffix(a, "/")
+	bslash := strings.HasPrefix(b, "/")
+	switch {
+	case aslash && bslash:
+		return a + b[1:]
+	case !aslash && !bslash:
+		return a + "/" + b
+	}
+	return a + b
 }

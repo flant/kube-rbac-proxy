@@ -22,9 +22,11 @@ import (
 	"net/http"
 	"strings"
 	"text/template"
+	"time"
 
 	"github.com/brancz/kube-rbac-proxy/pkg/authn"
 	"github.com/brancz/kube-rbac-proxy/pkg/authz"
+	utilcache "k8s.io/apimachinery/pkg/util/cache"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/apiserver/pkg/authorization/authorizer"
@@ -47,30 +49,66 @@ type kubeRBACProxy struct {
 	authorizerAttributesGetter *krpAuthorizerAttributesGetter
 	// config for kube-rbac-proxy
 	Config Config
+	// StaleCache for caching auth requests
+	StaleCache    simpleCache
+	StaleCacheTTL time.Duration
 }
 
-func new(authenticator authenticator.Request, authorizer authorizer.Authorizer, config Config) *kubeRBACProxy {
-	return &kubeRBACProxy{authenticator, authorizer, newKubeRBACProxyAuthorizerAttributesGetter(config.Authorization), config}
+func new(authenticator authenticator.Request, authorizer authorizer.Authorizer, config Config, staleCacheTTL time.Duration) *kubeRBACProxy {
+	proxy := kubeRBACProxy{
+		Request:                    authenticator,
+		Authorizer:                 authorizer,
+		authorizerAttributesGetter: newKubeRBACProxyAuthorizerAttributesGetter(config.Authorization),
+		Config:                     config,
+		StaleCache:                 FakeCache{},
+	}
+	if staleCacheTTL > 0*time.Second {
+		proxy.StaleCache = utilcache.NewLRUExpireCache(4096)
+		proxy.StaleCacheTTL = staleCacheTTL
+	}
+	return &proxy
 }
 
 // New creates an authenticator, an authorizer, and a matching authorizer attributes getter compatible with the kube-rbac-proxy
-func New(client clientset.Interface, config Config, authorizer authorizer.Authorizer, authenticator authenticator.Request) (*kubeRBACProxy, error) {
-	return new(authenticator, authorizer, config), nil
+func New(client clientset.Interface, config Config, authorizer authorizer.Authorizer, authenticator authenticator.Request, staleCacheTTL time.Duration) (*kubeRBACProxy, error) {
+	return new(authenticator, authorizer, config, staleCacheTTL), nil
 }
 
 // Handle authenticates the client and authorizes the request.
 // If the authn fails, a 401 error is returned. If the authz fails, a 403 error is returned
 func (h *kubeRBACProxy) Handle(w http.ResponseWriter, req *http.Request) bool {
+	identity := getTokenFromRequest(req)
+
+	klog.V(10).Infof("Token: %v", identity)
+	if req.TLS != nil {
+		klog.V(10).Infof("Certificates: %v", req.TLS.PeerCertificates)
+	}
+
 	// Authenticate
 	u, ok, err := h.AuthenticateRequest(req)
 	if err != nil {
-		klog.Errorf("Unable to authenticate the request due to an error: %v", err)
+		cachedUser, staleOk := h.StaleCache.Get(identity)
+		if !staleOk {
+			klog.Errorf("Unable to authenticate the request due to an error: %v", err)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return false
+		}
+		data := cachedUser.(authenticator.Response)
+		u = &data
+		klog.V(4).Infof("Getting authentication result for user %q from stale cache.", identity)
+	}
+
+	if !ok {
+		klog.Errorf("Unable to authenticate the request.")
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		h.StaleCache.Remove(identity)
 		return false
 	}
-	if !ok {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return false
+
+	klog.V(8).Infof("UserName: %s, Groups: %v", u.User.GetName(), u.User.GetGroups())
+	// If no token was specified in request, use user name from x509 authentication instead
+	if identity == "" {
+		identity = u.User.GetName()
 	}
 
 	// Get authorization attributes
@@ -79,6 +117,7 @@ func (h *kubeRBACProxy) Handle(w http.ResponseWriter, req *http.Request) bool {
 		msg := fmt.Sprintf("Bad Request. The request or configuration is malformed.")
 		klog.V(2).Info(msg)
 		http.Error(w, msg, http.StatusBadRequest)
+		h.StaleCache.Remove(identity)
 		return false
 	}
 
@@ -86,17 +125,25 @@ func (h *kubeRBACProxy) Handle(w http.ResponseWriter, req *http.Request) bool {
 		// Authorize
 		authorized, _, err := h.Authorize(attrs)
 		if err != nil {
-			msg := fmt.Sprintf("Authorization error (user=%s, verb=%s, resource=%s, subresource=%s)", u.User.GetName(), attrs.GetVerb(), attrs.GetResource(), attrs.GetSubresource())
-			klog.Errorf(msg, err)
-			http.Error(w, msg, http.StatusInternalServerError)
-			return false
+			_, staleOk := h.StaleCache.Get(identity)
+			if !staleOk {
+				msg := fmt.Sprintf("Authorization error (user=%s, verb=%s, resource=%s, subresource=%s)", u.User.GetName(), attrs.GetVerb(), attrs.GetResource(), attrs.GetSubresource())
+				klog.Errorf(msg, err)
+				http.Error(w, msg, http.StatusInternalServerError)
+				return false
+			}
+			klog.V(4).Infof("Getting authorization result for user %q from stale cache.", identity)
+			return true
 		}
 		if authorized != authorizer.DecisionAllow {
 			msg := fmt.Sprintf("Forbidden (user=%s, verb=%s, resource=%s, subresource=%s)", u.User.GetName(), attrs.GetVerb(), attrs.GetResource(), attrs.GetSubresource())
 			klog.V(2).Info(msg)
 			http.Error(w, msg, http.StatusForbidden)
+			h.StaleCache.Remove(identity)
 			return false
 		}
+		// Store user identity in stale cache only for successful authorized requests
+		h.StaleCache.Add(identity, &u, h.StaleCacheTTL)
 	}
 
 	if h.Config.Authentication.Header.Enabled {
@@ -189,7 +236,7 @@ func (n krpAuthorizerAttributesGetter) GetRequestAttributes(u user.Info, r *http
 		allAttrs = append(allAttrs, attrs)
 	}
 
-	for attrs := range allAttrs {
+	for _, attrs := range allAttrs {
 		klog.V(5).Infof("kube-rbac-proxy request attributes: attrs=%#v", attrs)
 	}
 
@@ -244,4 +291,34 @@ func templateWithValue(templateString, value string) string {
 	out := bytes.NewBuffer(nil)
 	tmpl.Execute(out, struct{ Value string }{Value: value})
 	return out.String()
+}
+
+func getTokenFromRequest(req *http.Request) string {
+	auth := strings.TrimSpace(req.Header.Get("Authorization"))
+	if auth == "" {
+		return ""
+	}
+	parts := strings.Split(auth, " ")
+	if len(parts) < 2 || strings.ToLower(parts[0]) != "bearer" {
+		return ""
+	}
+	return parts[1]
+}
+
+type simpleCache interface {
+	Add(key interface{}, value interface{}, ttl time.Duration)
+	Get(key interface{}) (interface{}, bool)
+	Remove(key interface{})
+	Keys() []interface{}
+}
+
+type FakeCache struct{}
+
+func (FakeCache) Add(key interface{}, value interface{}, ttl time.Duration) {}
+func (FakeCache) Get(key interface{}) (interface{}, bool) {
+	return struct{}{}, false
+}
+func (FakeCache) Remove(key interface{}) {}
+func (FakeCache) Keys() []interface{} {
+	return []interface{}{}
 }

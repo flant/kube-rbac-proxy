@@ -55,7 +55,7 @@ func TestProxyWithOIDCSupport(t *testing.T) {
 		t.Run(v.description, func(t *testing.T) {
 
 			w := httptest.NewRecorder()
-			proxy, err := New(kc, cfg, v.authorizer, authenticator)
+			proxy, err := New(kc, cfg, v.authorizer, authenticator, 0)
 
 			if err != nil {
 				t.Fatalf("Failed to instantiate test proxy. Details : %s", err.Error())

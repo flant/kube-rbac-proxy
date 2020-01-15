@@ -79,7 +79,7 @@ func New(client clientset.Interface, config Config, authorizer authorizer.Author
 func (h *kubeRBACProxy) Handle(w http.ResponseWriter, req *http.Request) bool {
 	token := getTokenFromRequest(req)
 	if token == "" {
-		glog.Errorf("Unable to get token from request")
+		klog.Errorf("Unable to get token from request")
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return false
 	}

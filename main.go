@@ -152,11 +152,7 @@ func main() {
 	flagset.Parse(os.Args[1:])
 	kcfg := initKubeConfig(cfg.kubeconfigLocation)
 
-	upstreamURL, err := url.Parse(cfg.upstream)
-	if err != nil {
-		klog.Fatalf("Failed to build parse upstream URL: %v", err)
-	}
-
+	var upstreams []upstream
 	if configFileName != "" {
 		klog.Infof("Reading config file: %s", configFileName)
 		b, err := ioutil.ReadFile(configFileName)
@@ -170,8 +166,16 @@ func main() {
 		if err != nil {
 			klog.Fatalf("Failed to parse config file content: %v", err)
 		}
-
-		cfg.auth.Authorization = configfile.AuthorizationConfig
+		upstreams = append(upstreams, configfile.Upstreams...)
+		if configfile.AuthorizationConfig != nil {
+			upstreams = append(upstreams, upstream{
+				AuthorizationConfig: configfile.AuthorizationConfig,
+				Upstream:            cfg.upstream,
+				Path:                "/",
+			})
+		}
+	} else {
+		upstreams = append(upstreams, upstream{AuthorizationConfig: nil, Upstream: cfg.upstream, Path: "/"})
 	}
 
 	kubeClient, err := kubernetes.NewForConfig(kcfg)
@@ -205,31 +209,39 @@ func main() {
 		klog.Fatalf("Failed to create authorizer: %v", err)
 	}
 
-	auth, err := proxy.New(kubeClient, cfg.auth, authorizer, authenticator, cfg.staleCacheTTL)
+	var gr run.Group
 
-	if err != nil {
-		klog.Fatalf("Failed to create rbac-proxy: %v", err)
-	}
-
-	upstreamTransport, newURL, err := initTransport(*upstreamURL, cfg.upstreamCAFile)
-	if err != nil {
-		klog.Fatalf("Failed to set up upstream TLS connection: %v", err)
-	}
-	upstreamURL = &newURL
-
-	proxy := httputil.NewSingleHostReverseProxy(upstreamURL)
-	proxy.Transport = upstreamTransport
 	mux := http.NewServeMux()
-	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		ok := auth.Handle(w, req)
-		if !ok {
-			return
+	for _, upstreamConfig := range upstreams {
+		upstreamURL, err := url.Parse(upstreamConfig.Upstream)
+		if err != nil {
+			klog.Fatalf("Failed to build parse upstream URL: %v", err)
 		}
 
-		proxy.ServeHTTP(w, req)
-	}))
+		cfg.auth.Authorization = upstreamConfig.AuthorizationConfig
+		auth, err := proxy.New(kubeClient, cfg.auth, authorizer, authenticator, cfg.staleCacheTTL)
 
-	var gr run.Group
+		if err != nil {
+			klog.Fatalf("Failed to create rbac-proxy: %v", err)
+		}
+
+		upstreamTransport, newURL, err := initTransport(*upstreamURL, cfg.upstreamCAFile)
+		if err != nil {
+			klog.Fatalf("Failed to set up upstream TLS connection: %v", err)
+		}
+		upstreamURL = &newURL
+
+		reverseProxy := httputil.NewSingleHostReverseProxy(upstreamURL)
+		reverseProxy.Transport = upstreamTransport
+		mux.Handle(upstreamConfig.Path, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			ok := auth.Handle(w, req)
+			if !ok {
+				return
+			}
+
+			reverseProxy.ServeHTTP(w, req)
+		}))
+	}
 	{
 		if cfg.secureListenAddress != "" {
 			srv := &http.Server{Handler: mux, TLSConfig: &tls.Config{}}
@@ -307,18 +319,21 @@ func main() {
 	{
 		if cfg.insecureListenAddress != "" {
 			if cfg.upstreamForceH2C {
-				// Force http/2 for connections to the upstream i.e. do not start with HTTP1.1 UPGRADE req to
-				// initialize http/2 session.
-				// See https://github.com/golang/go/issues/14141#issuecomment-219212895 for more context
-				proxy.Transport = &http2.Transport{
-					// Allow http schema. This doesn't automatically disable TLS
-					AllowHTTP: true,
-					// Do disable TLS.
-					// In combination with the schema check above. We could enforce h2c against the upstream server
-					DialTLS: func(netw, addr string, cfg *tls.Config) (net.Conn, error) {
-						return net.Dial(netw, addr)
-					},
-				}
+				klog.Info("no H2C possible in current configuration")
+				/*
+					// Force http/2 for connections to the upstream i.e. do not start with HTTP1.1 UPGRADE req to
+					// initialize http/2 session.
+					// See https://github.com/golang/go/issues/14141#issuecomment-219212895 for more context
+					mux.Transport = &http2.Transport{
+						// Allow http schema. This doesn't automatically disable TLS
+						AllowHTTP: true,
+						// Do disable TLS.
+						// In combination with the schema check above. We could enforce h2c against the upstream server
+						DialTLS: func(netw, addr string, cfg *tls.Config) (net.Conn, error) {
+							return net.Dial(netw, addr)
+						},
+					}
+				*/
 			}
 
 			srv := &http.Server{Handler: h2c.NewHandler(mux, &http2.Server{})}

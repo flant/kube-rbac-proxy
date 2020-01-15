@@ -71,7 +71,14 @@ type tlsConfig struct {
 }
 
 type configfile struct {
+	Upstreams           []upstream    `json:"authorization,upstreams"`
 	AuthorizationConfig *authz.Config `json:"authorization,omitempty"`
+}
+
+type upstream struct {
+	AuthorizationConfig *authz.Config `json:"authorization,omitempty"`
+	Path                string        `json:"path,omitempty"`
+	Upstream            string        `json:"upstream,omitempty"`
 }
 
 var versions = map[string]uint16{
@@ -86,24 +93,6 @@ func tlsVersion(versionName string) (uint16, error) {
 	}
 	return 0, fmt.Errorf("unknown tls version %q", versionName)
 }
-
-/*
-func parseUpstreams(upstreams []string) (*map[string]*url.URL, error) {
-	upstreamsMap := make(map[string]*url.URL)
-	for _, upstream := range upstreams {
-		parts := strings.Split(upstream, "=")
-		if len(parts) != 2 {
-			return nil, fmt.Errorf("error while parsing upstreams")
-		}
-		upstreamURL, err := url.Parse(parts[1])
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse URL: %v", err)
-		}
-		upstreamsMap[parts[0]] = upstreamURL
-	}
-	return &upstreamsMap, nil
-}
-*/
 
 func main() {
 	cfg := config{

@@ -166,8 +166,9 @@ func main() {
 		if err != nil {
 			klog.Fatalf("Failed to parse config file content: %v", err)
 		}
-		upstreams = append(upstreams, configfile.Upstreams...)
-		if configfile.AuthorizationConfig != nil {
+		if len(configfile.Upstreams) > 0 {
+			upstreams = append(upstreams, configfile.Upstreams...)
+		} else {
 			upstreams = append(upstreams, upstream{
 				AuthorizationConfig: configfile.AuthorizationConfig,
 				Upstream:            cfg.upstream,
@@ -175,7 +176,7 @@ func main() {
 			})
 		}
 	} else {
-		upstreams = append(upstreams, upstream{AuthorizationConfig: nil, Upstream: cfg.upstream, Path: "/"})
+		upstreams = append(upstreams, upstream{AuthorizationConfig: &authz.Config{}, Upstream: cfg.upstream, Path: "/"})
 	}
 
 	kubeClient, err := kubernetes.NewForConfig(kcfg)

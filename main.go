@@ -79,6 +79,7 @@ type upstream struct {
 	AuthorizationConfig authz.Config `json:"authorization,omitempty"`
 	Path                string       `json:"path,omitempty"`
 	Upstream            string       `json:"upstream,omitempty"`
+	UpstreamCaFile      string       `json:"upstreamCaFile,omitempty"`
 }
 
 var versions = map[string]uint16{
@@ -92,6 +93,39 @@ func tlsVersion(versionName string) (uint16, error) {
 		return version, nil
 	}
 	return 0, fmt.Errorf("unknown tls version %q", versionName)
+}
+
+func parseUpstreams(configFileName string, upstreamFromConfig string, upstreamCaFile string) ([]upstream, error) {
+	var upstreams []upstream
+	if configFileName == "" {
+		upstreams = append(upstreams, upstream{AuthorizationConfig: authz.Config{}, Upstream: upstreamFromConfig, UpstreamCaFile: upstreamCaFile, Path: "/"})
+		return upstreams, nil
+	}
+
+	klog.Infof("Reading config file: %s", configFileName)
+	b, err := ioutil.ReadFile(configFileName)
+	if err != nil {
+		return upstreams, fmt.Errorf("failed to read configuration file: %v", err)
+	}
+
+	configfile := configfile{}
+	err = yaml.Unmarshal(b, &configfile)
+	if err != nil {
+		return upstreams, fmt.Errorf("failed to parse configuration file: %v", err)
+	}
+
+	if len(configfile.Upstreams) == 0 {
+		upstreams = append(upstreams, upstream{
+			AuthorizationConfig: configfile.AuthorizationConfig,
+			Upstream:            upstreamFromConfig,
+			UpstreamCaFile:      upstreamCaFile,
+			Path:                "/",
+		})
+		return upstreams, nil
+	}
+
+	upstreams = append(upstreams, configfile.Upstreams...)
+	return upstreams, nil
 }
 
 func main() {
@@ -152,33 +186,10 @@ func main() {
 	flagset.Parse(os.Args[1:])
 	kcfg := initKubeConfig(cfg.kubeconfigLocation)
 
-	var upstreams []upstream
-	if configFileName != "" {
-		klog.Infof("Reading config file: %s", configFileName)
-		b, err := ioutil.ReadFile(configFileName)
-		if err != nil {
-			klog.Fatalf("Failed to read resource-attribute file: %v", err)
-		}
-
-		configfile := configfile{}
-
-		err = yaml.Unmarshal(b, &configfile)
-		if err != nil {
-			klog.Fatalf("Failed to parse config file content: %v", err)
-		}
-		if len(configfile.Upstreams) > 0 {
-			upstreams = append(upstreams, configfile.Upstreams...)
-		} else {
-			upstreams = append(upstreams, upstream{
-				AuthorizationConfig: configfile.AuthorizationConfig,
-				Upstream:            cfg.upstream,
-				Path:                "/",
-			})
-		}
-	} else {
-		upstreams = append(upstreams, upstream{AuthorizationConfig: authz.Config{}, Upstream: cfg.upstream, Path: "/"})
+	upstreams, err := parseUpstreams(configFileName, cfg.upstream, cfg.upstreamCAFile)
+	if err != nil {
+		klog.Fatalf("Failed to parse upstreams: %v", err)
 	}
-	klog.Errorf("upstreams: %v", upstreams)
 
 	kubeClient, err := kubernetes.NewForConfig(kcfg)
 	if err != nil {
@@ -215,6 +226,8 @@ func main() {
 
 	mux := http.NewServeMux()
 	for _, upstreamConfig := range upstreams {
+		klog.Infof("Added upstream: path=%s, upstream=%s", upstreamConfig.Path, upstreamConfig.Upstream)
+
 		upstreamURL, err := url.Parse(upstreamConfig.Upstream)
 		if err != nil {
 			klog.Fatalf("Failed to build parse upstream URL: %v", err)
@@ -227,7 +240,7 @@ func main() {
 			klog.Fatalf("Failed to create rbac-proxy: %v", err)
 		}
 
-		upstreamTransport, newURL, err := initTransport(*upstreamURL, cfg.upstreamCAFile)
+		upstreamTransport, newURL, err := initTransport(*upstreamURL, upstreamConfig.UpstreamCaFile)
 		if err != nil {
 			klog.Fatalf("Failed to set up upstream TLS connection: %v", err)
 		}
@@ -321,7 +334,7 @@ func main() {
 	{
 		if cfg.insecureListenAddress != "" {
 			if cfg.upstreamForceH2C {
-				klog.Info("no H2C possible in current configuration")
+				klog.Info("no force H2C possible in current configuration")
 				/*
 					// Force http/2 for connections to the upstream i.e. do not start with HTTP1.1 UPGRADE req to
 					// initialize http/2 session.

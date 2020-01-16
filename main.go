@@ -71,7 +71,7 @@ type tlsConfig struct {
 }
 
 type configfile struct {
-	Upstreams           []upstream   `json:"authorization,upstreams"`
+	Upstreams           []upstream   `json:"upstreams,omitempty"`
 	AuthorizationConfig authz.Config `json:"authorization,omitempty"`
 }
 

@@ -302,6 +302,10 @@ type simpleCache interface {
 type FakeCache struct{}
 
 func (FakeCache) Add(key interface{}, value interface{}, ttl time.Duration) {}
-func (FakeCache) Get(key interface{}) (interface{}, bool)                   { return nil, false }
-func (FakeCache) Remove(key interface{})                                    {}
-func (FakeCache) Keys() []interface{}                                       { return []interface{}{} }
+func (FakeCache) Get(key interface{}) (interface{}, bool) {
+	return struct{}{}, false
+}
+func (FakeCache) Remove(key interface{}) {}
+func (FakeCache) Keys() []interface{} {
+	return []interface{}{}
+}

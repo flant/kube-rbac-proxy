@@ -71,14 +71,14 @@ type tlsConfig struct {
 }
 
 type configfile struct {
-	Upstreams           []upstream    `json:"authorization,upstreams"`
-	AuthorizationConfig *authz.Config `json:"authorization,omitempty"`
+	Upstreams           []upstream   `json:"authorization,upstreams"`
+	AuthorizationConfig authz.Config `json:"authorization,omitempty"`
 }
 
 type upstream struct {
-	AuthorizationConfig *authz.Config `json:"authorization,omitempty"`
-	Path                string        `json:"path,omitempty"`
-	Upstream            string        `json:"upstream,omitempty"`
+	AuthorizationConfig authz.Config `json:"authorization,omitempty"`
+	Path                string       `json:"path,omitempty"`
+	Upstream            string       `json:"upstream,omitempty"`
 }
 
 var versions = map[string]uint16{
@@ -176,8 +176,9 @@ func main() {
 			})
 		}
 	} else {
-		upstreams = append(upstreams, upstream{AuthorizationConfig: &authz.Config{}, Upstream: cfg.upstream, Path: "/"})
+		upstreams = append(upstreams, upstream{AuthorizationConfig: authz.Config{}, Upstream: cfg.upstream, Path: "/"})
 	}
+	klog.Errorf("upstreams: %v", upstreams)
 
 	kubeClient, err := kubernetes.NewForConfig(kcfg)
 	if err != nil {
@@ -219,7 +220,7 @@ func main() {
 			klog.Fatalf("Failed to build parse upstream URL: %v", err)
 		}
 
-		cfg.auth.Authorization = upstreamConfig.AuthorizationConfig
+		cfg.auth.Authorization = &upstreamConfig.AuthorizationConfig
 		auth, err := proxy.New(kubeClient, cfg.auth, authorizer, authenticator, cfg.staleCacheTTL)
 
 		if err != nil {

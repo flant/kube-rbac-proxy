@@ -28,6 +28,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -246,7 +247,7 @@ func main() {
 		}
 		upstreamURL = &newURL
 
-		reverseProxy := httputil.NewSingleHostReverseProxy(upstreamURL)
+		reverseProxy := NewSingleHostReverseProxyWithRewrite(upstreamURL, upstreamConfig.Path)
 		reverseProxy.Transport = upstreamTransport
 		mux.Handle(upstreamConfig.Path, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			ok := auth.Handle(w, req)
@@ -405,4 +406,24 @@ func initKubeConfig(kcLocation string) *rest.Config {
 	}
 
 	return kubeConfig
+}
+
+func NewSingleHostReverseProxyWithRewrite(target *url.URL, prefix string) *httputil.ReverseProxy {
+	targetQuery := target.RawQuery
+	director := func(req *http.Request) {
+		req.URL.Scheme = target.Scheme
+		req.URL.Host = target.Host
+		req.URL.Path = strings.TrimPrefix(req.URL.Path, prefix)
+
+		if targetQuery == "" || req.URL.RawQuery == "" {
+			req.URL.RawQuery = targetQuery + req.URL.RawQuery
+		} else {
+			req.URL.RawQuery = targetQuery + "&" + req.URL.RawQuery
+		}
+		if _, ok := req.Header["User-Agent"]; !ok {
+			req.Header.Set("User-Agent", "")
+		}
+		klog.V(4).Infof("Request URL: $s", req.URL.String())
+	}
+	return &httputil.ReverseProxy{Director: director}
 }

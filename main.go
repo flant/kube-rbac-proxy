@@ -247,8 +247,9 @@ func main() {
 		}
 		upstreamURL = &newURL
 
-		reverseProxy := NewSingleHostReverseProxyWithRewrite(upstreamURL)
+		reverseProxy := NewSingleHostReverseProxyWithRewrite(upstreamURL, upstreamConfig.Path)
 		reverseProxy.Transport = upstreamTransport
+
 		mux.Handle(upstreamConfig.Path, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			ok := auth.Handle(w, req)
 			if !ok {
@@ -408,12 +409,12 @@ func initKubeConfig(kcLocation string) *rest.Config {
 	return kubeConfig
 }
 
-func NewSingleHostReverseProxyWithRewrite(target *url.URL) *httputil.ReverseProxy {
+func NewSingleHostReverseProxyWithRewrite(target *url.URL, path string) *httputil.ReverseProxy {
 	targetQuery := target.RawQuery
 	director := func(req *http.Request) {
 		req.URL.Scheme = target.Scheme
 		req.URL.Host = target.Host
-		req.URL.Path = singleJoiningSlash(target.Path, req.URL.Path)
+		req.URL.Path = singleJoiningSlash(target.Path, strings.TrimPrefix(req.URL.Path, path))
 
 		if targetQuery == "" || req.URL.RawQuery == "" {
 			req.URL.RawQuery = targetQuery + req.URL.RawQuery

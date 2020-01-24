@@ -77,16 +77,12 @@ func New(client clientset.Interface, config Config, authorizer authorizer.Author
 // Handle authenticates the client and authorizes the request.
 // If the authn fails, a 401 error is returned. If the authz fails, a 403 error is returned
 func (h *kubeRBACProxy) Handle(w http.ResponseWriter, req *http.Request) bool {
-	token := getTokenFromRequest(req)
-	if token == "" {
-		klog.Errorf("Unable to get token from request")
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return false
-	}
+	identity := getTokenFromRequest(req)
+
 	// Authenticate
 	u, ok, err := h.AuthenticateRequest(req)
 	if err != nil {
-		cachedUser, staleOk := h.StaleCache.Get(token)
+		cachedUser, staleOk := h.StaleCache.Get(identity)
 		if !staleOk {
 			klog.Errorf("Unable to authenticate the request due to an error: %v", err)
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
@@ -97,8 +93,13 @@ func (h *kubeRBACProxy) Handle(w http.ResponseWriter, req *http.Request) bool {
 	}
 	if !ok {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		h.StaleCache.Remove(token)
+		h.StaleCache.Remove(identity)
 		return false
+	}
+
+	// If no token was specified in request, use user name from x509 authentication instead
+	if identity == "" {
+		identity = u.User.GetName()
 	}
 
 	// Get authorization attributes
@@ -107,7 +108,7 @@ func (h *kubeRBACProxy) Handle(w http.ResponseWriter, req *http.Request) bool {
 		msg := fmt.Sprintf("Bad Request. The request or configuration is malformed.")
 		klog.V(2).Info(msg)
 		http.Error(w, msg, http.StatusBadRequest)
-		h.StaleCache.Remove(token)
+		h.StaleCache.Remove(identity)
 		return false
 	}
 
@@ -115,7 +116,7 @@ func (h *kubeRBACProxy) Handle(w http.ResponseWriter, req *http.Request) bool {
 		// Authorize
 		authorized, _, err := h.Authorize(attrs)
 		if err != nil {
-			_, staleOk := h.StaleCache.Get(token)
+			_, staleOk := h.StaleCache.Get(identity)
 			if !staleOk {
 				msg := fmt.Sprintf("Authorization error (user=%s, verb=%s, resource=%s, subresource=%s)", u.User.GetName(), attrs.GetVerb(), attrs.GetResource(), attrs.GetSubresource())
 				klog.Errorf(msg, err)
@@ -127,10 +128,10 @@ func (h *kubeRBACProxy) Handle(w http.ResponseWriter, req *http.Request) bool {
 			msg := fmt.Sprintf("Forbidden (user=%s, verb=%s, resource=%s, subresource=%s)", u.User.GetName(), attrs.GetVerb(), attrs.GetResource(), attrs.GetSubresource())
 			klog.V(2).Info(msg)
 			http.Error(w, msg, http.StatusForbidden)
-			h.StaleCache.Remove(token)
+			h.StaleCache.Remove(identity)
 			return false
 		}
-		h.StaleCache.Add(token, &u, h.StaleCacheTTL)
+		h.StaleCache.Add(identity, &u, h.StaleCacheTTL)
 	}
 
 	if h.Config.Authentication.Header.Enabled {

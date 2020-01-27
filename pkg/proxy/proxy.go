@@ -79,9 +79,6 @@ func New(client clientset.Interface, config Config, authorizer authorizer.Author
 func (h *kubeRBACProxy) Handle(w http.ResponseWriter, req *http.Request) bool {
 	identity := getTokenFromRequest(req)
 
-	klog.V(10).Infof("Token: %v", identity)
-	klog.V(10).Infof("Certificates: %v", req.TLS.PeerCertificates)
-
 	// Authenticate
 	u, ok, err := h.AuthenticateRequest(req)
 	if err != nil {

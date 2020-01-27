@@ -78,6 +78,7 @@ func New(client clientset.Interface, config Config, authorizer authorizer.Author
 // If the authn fails, a 401 error is returned. If the authz fails, a 403 error is returned
 func (h *kubeRBACProxy) Handle(w http.ResponseWriter, req *http.Request) bool {
 	identity := getTokenFromRequest(req)
+	klog.V(10).Infof("Request: %v", req)
 
 	// Authenticate
 	u, ok, err := h.AuthenticateRequest(req)
@@ -91,14 +92,15 @@ func (h *kubeRBACProxy) Handle(w http.ResponseWriter, req *http.Request) bool {
 		data := cachedUser.(authenticator.Response)
 		u = &data
 	}
-	klog.V(8).Infof("UserName: %s, Groups: %v", u.User.GetName(), u.User.GetGroups())
 
 	if !ok {
+		klog.Errorf("Unable to authenticate the request.")
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		h.StaleCache.Remove(identity)
 		return false
 	}
 
+	klog.V(8).Infof("UserName: %s, Groups: %v", u.User.GetName(), u.User.GetGroups())
 	// If no token was specified in request, use user name from x509 authentication instead
 	if identity == "" {
 		identity = u.User.GetName()

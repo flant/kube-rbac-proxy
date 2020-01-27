@@ -91,6 +91,8 @@ func (h *kubeRBACProxy) Handle(w http.ResponseWriter, req *http.Request) bool {
 		data := cachedUser.(authenticator.Response)
 		u = &data
 	}
+	klog.V(2).Infof("UserName: %s, Groups: %v", u.User.GetName(), u.User.GetGroups())
+
 	if !ok {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		h.StaleCache.Remove(identity)

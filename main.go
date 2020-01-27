@@ -81,6 +81,7 @@ type upstream struct {
 	Path                string       `json:"path,omitempty"`
 	Upstream            string       `json:"upstream,omitempty"`
 	UpstreamCaFile      string       `json:"upstreamCaFile,omitempty"`
+	SkipAuth            bool         `json:"skipAuth,omitempty"`
 }
 
 var versions = map[string]uint16{
@@ -251,11 +252,12 @@ func main() {
 		reverseProxy.Transport = upstreamTransport
 
 		mux.Handle(upstreamConfig.Path, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-			ok := auth.Handle(w, req)
-			if !ok {
-				return
+			if upstreamConfig.SkipAuth != true {
+				ok := auth.Handle(w, req)
+				if !ok {
+					return
+				}
 			}
-
 			reverseProxy.ServeHTTP(w, req)
 		}))
 	}

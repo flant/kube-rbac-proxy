@@ -308,6 +308,7 @@ func main() {
 
 			srv.TLSConfig.CipherSuites = cipherSuiteIDs
 			srv.TLSConfig.MinVersion = version
+			srv.TLSConfig.ClientAuth = tls.RequestClientCert
 
 			if err := http2.ConfigureServer(srv, nil); err != nil {
 				klog.Fatalf("failed to configure http2 server: %v", err)

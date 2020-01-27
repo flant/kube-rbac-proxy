@@ -78,7 +78,9 @@ func New(client clientset.Interface, config Config, authorizer authorizer.Author
 // If the authn fails, a 401 error is returned. If the authz fails, a 403 error is returned
 func (h *kubeRBACProxy) Handle(w http.ResponseWriter, req *http.Request) bool {
 	identity := getTokenFromRequest(req)
-	klog.V(10).Infof("Request: %v", req)
+
+	klog.V(10).Infof("Token: %v", identity)
+	klog.V(10).Infof("Certificates: %v", req.TLS.PeerCertificates)
 
 	// Authenticate
 	u, ok, err := h.AuthenticateRequest(req)

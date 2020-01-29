@@ -228,7 +228,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	for _, upstreamConfig := range upstreams {
-		klog.Infof("Added upstream: path=%s, upstream=%s", upstreamConfig.Path, upstreamConfig.Upstream)
+		klog.Infof("Added upstream: path=%s, upstream=%s, excludePaths", upstreamConfig.Path, upstreamConfig.Upstream, upstreamConfig.ExcludePaths)
 
 		upstreamURL, err := url.Parse(upstreamConfig.Upstream)
 		if err != nil {
@@ -260,6 +260,8 @@ func main() {
 					break
 				}
 			}
+			klog.V(10).Infof("Path excluded: %s", excludedPath)
+
 			if !excludedPath {
 				ok := auth.Handle(w, req)
 				if !ok {

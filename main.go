@@ -57,6 +57,7 @@ type config struct {
 	upstream              string
 	upstreamForceH2C      bool
 	upstreamCAFile        string
+	excludePaths          []string
 	auth                  proxy.Config
 	tls                   tlsConfig
 	kubeconfigLocation    string
@@ -72,6 +73,7 @@ type tlsConfig struct {
 }
 
 type configfile struct {
+	ExcludePaths        []string     `json:"excludePaths,omitempty"`
 	Upstreams           []upstream   `json:"upstreams,omitempty"`
 	AuthorizationConfig authz.Config `json:"authorization,omitempty"`
 }
@@ -97,23 +99,23 @@ func tlsVersion(versionName string) (uint16, error) {
 	return 0, fmt.Errorf("unknown tls version %q", versionName)
 }
 
-func parseUpstreams(configFileName string, upstreamFromConfig string, upstreamCaFile string) ([]upstream, error) {
+func parseConfigFile(configFileName string, upstreamFromConfig string, upstreamCaFile string) ([]upstream, []string, error) {
 	var upstreams []upstream
 	if configFileName == "" {
 		upstreams = append(upstreams, upstream{AuthorizationConfig: authz.Config{}, Upstream: upstreamFromConfig, UpstreamCaFile: upstreamCaFile, Path: "/"})
-		return upstreams, nil
+		return upstreams, []string{}, nil
 	}
 
 	klog.Infof("Reading config file: %s", configFileName)
 	b, err := ioutil.ReadFile(configFileName)
 	if err != nil {
-		return upstreams, fmt.Errorf("failed to read configuration file: %v", err)
+		return upstreams, []string{}, fmt.Errorf("failed to read configuration file: %v", err)
 	}
 
 	configfile := configfile{}
 	err = yaml.Unmarshal(b, &configfile)
 	if err != nil {
-		return upstreams, fmt.Errorf("failed to parse configuration file: %v", err)
+		return upstreams, []string{}, fmt.Errorf("failed to parse configuration file: %v", err)
 	}
 
 	if len(configfile.Upstreams) == 0 {
@@ -123,11 +125,11 @@ func parseUpstreams(configFileName string, upstreamFromConfig string, upstreamCa
 			UpstreamCaFile:      upstreamCaFile,
 			Path:                "/",
 		})
-		return upstreams, nil
+		return upstreams, configfile.ExcludePaths, nil
 	}
 
 	upstreams = append(upstreams, configfile.Upstreams...)
-	return upstreams, nil
+	return upstreams, configfile.ExcludePaths, nil
 }
 
 func main() {
@@ -158,6 +160,7 @@ func main() {
 	flagset.StringVar(&cfg.upstreamCAFile, "upstream-ca-file", "", "The CA the upstream uses for TLS connection. This is required when the upstream uses TLS and its own CA certificate")
 	flagset.StringVar(&configFileName, "config-file", "", "Configuration file to configure kube-rbac-proxy.")
 	flagset.DurationVar(&cfg.tls.reloadInterval, "stale-cache-interval", 0*time.Minute, "The interval to keep auth request review result for in case of unconsciousness of apiserver.")
+	flagset.StringArrayVar(&cfg.excludePaths, "exclude-path", []string{}, "Path to skip authentication and authorizations checks for. May be necessary to describe liveness and readiness probe endpoints.")
 
 	// TLS flags
 	flagset.StringVar(&cfg.tls.certFile, "tls-cert-file", "", "File containing the default x509 Certificate for HTTPS. (CA cert, if any, concatenated after server cert)")
@@ -188,10 +191,11 @@ func main() {
 	flagset.Parse(os.Args[1:])
 	kcfg := initKubeConfig(cfg.kubeconfigLocation)
 
-	upstreams, err := parseUpstreams(configFileName, cfg.upstream, cfg.upstreamCAFile)
+	upstreams, exludePaths, err := parseConfigFile(configFileName, cfg.upstream, cfg.upstreamCAFile)
 	if err != nil {
-		klog.Fatalf("Failed to parse upstreams: %v", err)
+		klog.Fatalf("Failed to parse config file: %v", err)
 	}
+	cfg.excludePaths = append(cfg.excludePaths, exludePaths...)
 
 	kubeClient, err := kubernetes.NewForConfig(kcfg)
 	if err != nil {
@@ -226,9 +230,11 @@ func main() {
 
 	var gr run.Group
 
+	klog.Infof("Excluded paths: %v", cfg.excludePaths)
+
 	mux := http.NewServeMux()
 	for _, upstreamConfig := range upstreams {
-		klog.Infof("Added upstream: path=%s, upstream=%s, excludePaths", upstreamConfig.Path, upstreamConfig.Upstream, upstreamConfig.ExcludePaths)
+		klog.Infof("Added upstream: path=%s, upstream=%s", upstreamConfig.Path, upstreamConfig.Upstream)
 
 		upstreamURL, err := url.Parse(upstreamConfig.Upstream)
 		if err != nil {
@@ -254,13 +260,13 @@ func main() {
 		mux.Handle(upstreamConfig.Path, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			excludedPath := false
 			klog.V(10).Infof("Request URL to challenge exclude paths: %s", req.URL.Path)
-			for _, excludePathFromConfig := range upstreamConfig.ExcludePaths {
+			for _, excludePathFromConfig := range cfg.excludePaths {
 				if req.URL.Path == excludePathFromConfig {
 					excludedPath = true
 					break
 				}
 			}
-			klog.V(10).Infof("Path excluded: %s", excludedPath)
+			klog.V(10).Infof("Path excluded: %v", excludedPath)
 
 			if !excludedPath {
 				ok := auth.Handle(w, req)

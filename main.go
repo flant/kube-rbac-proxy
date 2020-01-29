@@ -256,6 +256,7 @@ func main() {
 			for _, excludePathFromConfig := range upstreamConfig.ExcludePaths {
 				if req.URL.Path == excludePathFromConfig {
 					excludePath = true
+					break
 				}
 			}
 			if !excludePath {

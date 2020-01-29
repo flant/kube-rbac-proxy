@@ -252,14 +252,15 @@ func main() {
 		reverseProxy.Transport = upstreamTransport
 
 		mux.Handle(upstreamConfig.Path, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-			excludePath := false
+			excludedPath := false
+			klog.V(10).Infof("Request URL to challenge exclude paths: %s", req.URL.Path)
 			for _, excludePathFromConfig := range upstreamConfig.ExcludePaths {
 				if req.URL.Path == excludePathFromConfig {
-					excludePath = true
+					excludedPath = true
 					break
 				}
 			}
-			if !excludePath {
+			if !excludedPath {
 				ok := auth.Handle(w, req)
 				if !ok {
 					return

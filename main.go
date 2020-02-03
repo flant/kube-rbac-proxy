@@ -249,7 +249,7 @@ func main() {
 		}
 
 		proxyConfig := proxy.Config{Authentication: cfg.auth.Authentication, Authorization: &upstreamConfig.AuthorizationConfig}
-		auth, err := proxy.New(kubeClient, proxyConfig, authorizer, authenticator, cfg.staleCacheTTL)
+		auth, err := proxy.New(kubeClient, *proxyConfig.DeepCopy(), authorizer, authenticator, cfg.staleCacheTTL)
 
 		if err != nil {
 			klog.Fatalf("Failed to create rbac-proxy: %v", err)

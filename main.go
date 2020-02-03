@@ -101,19 +101,26 @@ func tlsVersion(versionName string) (uint16, error) {
 
 func parseConfigFile(configFileName string, upstreamFromConfig string, upstreamCaFile string) ([]upstream, []string, error) {
 	var upstreams []upstream
-	if configFileName == "" {
+	var b []byte
+
+	data := os.Getenv("KUBE_RBAC_PROXY_CONFIG")
+	if data != "" {
+		klog.Infof("Parsing configuration from environment variable KUBE_RBAC_PROXY_CONFIG: %s", configFileName)
+		b = []byte(data)
+	} else if configFileName != "" {
+		var err error
+		klog.Infof("Reading config file: %s", configFileName)
+		b, err = ioutil.ReadFile(configFileName)
+		if err != nil {
+			return upstreams, []string{}, fmt.Errorf("failed to read configuration file: %v", err)
+		}
+	} else {
 		upstreams = append(upstreams, upstream{AuthorizationConfig: authz.Config{}, Upstream: upstreamFromConfig, UpstreamCaFile: upstreamCaFile, Path: "/"})
 		return upstreams, []string{}, nil
 	}
 
-	klog.Infof("Reading config file: %s", configFileName)
-	b, err := ioutil.ReadFile(configFileName)
-	if err != nil {
-		return upstreams, []string{}, fmt.Errorf("failed to read configuration file: %v", err)
-	}
-
 	configfile := configfile{}
-	err = yaml.Unmarshal(b, &configfile)
+	err := yaml.Unmarshal(b, &configfile)
 	if err != nil {
 		return upstreams, []string{}, fmt.Errorf("failed to parse configuration file: %v", err)
 	}

@@ -248,8 +248,8 @@ func main() {
 			klog.Fatalf("Failed to build parse upstream URL: %v", err)
 		}
 
-		cfg.auth.Authorization = &upstreamConfig.AuthorizationConfig
-		auth, err := proxy.New(kubeClient, cfg.auth, authorizer, authenticator, cfg.staleCacheTTL)
+		proxyConfig := proxy.Config{Authentication: cfg.auth.Authentication, Authorization: &upstreamConfig.AuthorizationConfig}
+		auth, err := proxy.New(kubeClient, proxyConfig, authorizer, authenticator, cfg.staleCacheTTL)
 
 		if err != nil {
 			klog.Fatalf("Failed to create rbac-proxy: %v", err)

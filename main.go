@@ -435,7 +435,7 @@ func NewSingleHostReverseProxyWithRewrite(target *url.URL, path string) *httputi
 		req.URL.Host = target.Host
 
 		req.URL.Path = singleJoiningSlash(target.Path, strings.TrimPrefix(req.URL.Path, path))
-		if strings.HasSuffix(path, "/") {
+		if !strings.HasSuffix(path, "/") {
 			req.URL.Path = strings.TrimSuffix(req.URL.Path, "/")
 		}
 

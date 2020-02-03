@@ -433,7 +433,11 @@ func NewSingleHostReverseProxyWithRewrite(target *url.URL, path string) *httputi
 	director := func(req *http.Request) {
 		req.URL.Scheme = target.Scheme
 		req.URL.Host = target.Host
-		req.URL.Path = singleJoiningSlash(target.Path, strings.TrimPrefix(req.URL.Path, path))
+
+		req.URL.Path = target.Path
+		if strings.HasSuffix(path, "/") {
+			req.URL.Path = singleJoiningSlash(target.Path, strings.TrimPrefix(req.URL.Path, path))
+		}
 
 		if targetQuery == "" || req.URL.RawQuery == "" {
 			req.URL.RawQuery = targetQuery + req.URL.RawQuery

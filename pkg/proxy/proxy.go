@@ -95,6 +95,7 @@ func (h *kubeRBACProxy) Handle(w http.ResponseWriter, req *http.Request) bool {
 		}
 		data := cachedUser.(authenticator.Response)
 		u = &data
+		klog.V(4).Infof("Getting authentication result for user %q from stale cache.", identity)
 	}
 
 	if !ok {
@@ -131,6 +132,8 @@ func (h *kubeRBACProxy) Handle(w http.ResponseWriter, req *http.Request) bool {
 				http.Error(w, msg, http.StatusInternalServerError)
 				return false
 			}
+			klog.V(4).Infof("Getting authorization result for user %q from stale cache.", identity)
+			return true
 		}
 		if authorized != authorizer.DecisionAllow {
 			msg := fmt.Sprintf("Forbidden (user=%s, verb=%s, resource=%s, subresource=%s)", u.User.GetName(), attrs.GetVerb(), attrs.GetResource(), attrs.GetSubresource())

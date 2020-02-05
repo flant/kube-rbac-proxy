@@ -241,8 +241,6 @@ func main() {
 
 	mux := http.NewServeMux()
 	for _, upstreamConfig := range upstreams {
-		klog.Infof("Added upstream: path=%s, upstream=%s", upstreamConfig.Path, upstreamConfig.Upstream)
-
 		upstreamURL, err := url.Parse(upstreamConfig.Upstream)
 		if err != nil {
 			klog.Fatalf("Failed to build parse upstream URL: %v", err)
@@ -255,7 +253,7 @@ func main() {
 			klog.Fatalf("Failed to create rbac-proxy: %v", err)
 		}
 
-		upstreamTransport, newURL, err := initTransport(*upstreamURL, upstreamConfig.UpstreamCaFile)
+		upstreamTransport, newURL, err := initTransport(*upstreamURL, upstreamConfig.UpstreamCaFile, cfg.upstreamForceH2C)
 		if err != nil {
 			klog.Fatalf("Failed to set up upstream TLS connection: %v", err)
 		}
@@ -266,15 +264,13 @@ func main() {
 
 		mux.Handle(upstreamConfig.Path, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			excludedPath := false
-			klog.V(10).Infof("Request URL to challenge exclude paths: %s", req.URL.Path)
+			klog.V(10).Infof("Proxy URL requested: %s", req.URL.Path)
 			for _, excludePathFromConfig := range cfg.excludePaths {
 				if req.URL.Path == excludePathFromConfig {
 					excludedPath = true
 					break
 				}
 			}
-			klog.V(10).Infof("Path excluded: %v", excludedPath)
-
 			if !excludedPath {
 				ok := auth.Handle(w, req)
 				if !ok {
@@ -283,6 +279,7 @@ func main() {
 			}
 			reverseProxy.ServeHTTP(w, req)
 		}))
+		klog.Infof("Added upstream: path=%s, upstream=%s", upstreamConfig.Path, upstreamConfig.Upstream)
 	}
 	{
 		if cfg.secureListenAddress != "" {
@@ -361,24 +358,6 @@ func main() {
 	}
 	{
 		if cfg.insecureListenAddress != "" {
-			if cfg.upstreamForceH2C {
-				klog.Info("no force H2C possible in current configuration")
-				/*
-					// Force http/2 for connections to the upstream i.e. do not start with HTTP1.1 UPGRADE req to
-					// initialize http/2 session.
-					// See https://github.com/golang/go/issues/14141#issuecomment-219212895 for more context
-					mux.Transport = &http2.Transport{
-						// Allow http schema. This doesn't automatically disable TLS
-						AllowHTTP: true,
-						// Do disable TLS.
-						// In combination with the schema check above. We could enforce h2c against the upstream server
-						DialTLS: func(netw, addr string, cfg *tls.Config) (net.Conn, error) {
-							return net.Dial(netw, addr)
-						},
-					}
-				*/
-			}
-
 			srv := &http.Server{Handler: h2c.NewHandler(mux, &http2.Server{})}
 
 			l, err := net.Listen("tcp", cfg.insecureListenAddress)

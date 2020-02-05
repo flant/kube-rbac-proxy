@@ -22,6 +22,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"golang.org/x/net/http2"
 	"io/ioutil"
 	"net"
 	"net/http"
@@ -30,7 +31,26 @@ import (
 	"time"
 )
 
-func initTransport(upstreamURL url.URL, upstreamCAFile string) (http.RoundTripper, url.URL, error) {
+func initTransport(upstreamURL url.URL, upstreamCAFile string, forceHTTP2 bool) (http.RoundTripper, url.URL, error) {
+	if forceHTTP2 {
+		if upstreamURL.Scheme == "unix" {
+			return nil, upstreamURL, fmt.Errorf("can't force HTTP2 for unix socket upstreams")
+		}
+		// Force http/2 for connections to the upstream i.e. do not start with HTTP1.1 UPGRADE req to
+		// initialize http/2 session.
+		// See https://github.com/golang/go/issues/14141#issuecomment-219212895 for more context
+		http2Transport := http2.Transport{
+			// Allow http schema. This doesn't automatically disable TLS
+			AllowHTTP: true,
+			// Do disable TLS.
+			// In combination with the schema check above. We could enforce h2c against the upstream server
+			DialTLS: func(netw, addr string, cfg *tls.Config) (net.Conn, error) {
+				return net.Dial(netw, addr)
+			},
+		}
+		return &http2Transport, upstreamURL, nil
+	}
+
 	transport := http.Transport{
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: (&net.Dialer{

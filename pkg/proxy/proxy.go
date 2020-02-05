@@ -142,6 +142,7 @@ func (h *kubeRBACProxy) Handle(w http.ResponseWriter, req *http.Request) bool {
 			h.StaleCache.Remove(identity)
 			return false
 		}
+		// Store user identity in stale cache only for successful authorized requests
 		h.StaleCache.Add(identity, &u, h.StaleCacheTTL)
 	}
 

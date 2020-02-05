@@ -22,7 +22,7 @@ import (
 )
 
 func TestInitTransportWithDefault(t *testing.T) {
-	roundTripper, _, err := initTransport(url.URL{}, "")
+	roundTripper, _, err := initTransport(url.URL{}, "", false)
 	if err != nil {
 		t.Errorf("want err to be nil, but got %v", err)
 		return
@@ -33,7 +33,7 @@ func TestInitTransportWithDefault(t *testing.T) {
 }
 
 func TestInitTransportWithCustomCA(t *testing.T) {
-	roundTripper, _, err := initTransport(url.URL{}, "test/ca.pem")
+	roundTripper, _, err := initTransport(url.URL{}, "test/ca.pem", false)
 	if err != nil {
 		t.Errorf("want err to be nil, but got %v", err)
 		return
@@ -45,7 +45,7 @@ func TestInitTransportWithCustomCA(t *testing.T) {
 }
 
 func TestInitTransportWithUnixSocketURL(t *testing.T) {
-	_, upstreamURL, err := initTransport(url.URL{Scheme: "unix", Path: "/test:/test"}, "")
+	_, upstreamURL, err := initTransport(url.URL{Scheme: "unix", Path: "/test:/test"}, "", false)
 	if err != nil {
 		t.Errorf("want err to be nil, but got %v", err)
 		return

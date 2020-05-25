@@ -166,7 +166,7 @@ func main() {
 	flagset.BoolVar(&cfg.upstreamForceH2C, "upstream-force-h2c", false, "Force h2c to communiate with the upstream. This is required when the upstream speaks h2c(http/2 cleartext - insecure variant of http/2) only. For example, go-grpc server in the insecure mode, such as helm's tiller w/o TLS, speaks h2c only")
 	flagset.StringVar(&cfg.upstreamCAFile, "upstream-ca-file", "", "The CA the upstream uses for TLS connection. This is required when the upstream uses TLS and its own CA certificate")
 	flagset.StringVar(&configFileName, "config-file", "", "Configuration file to configure kube-rbac-proxy.")
-	flagset.DurationVar(&cfg.tls.reloadInterval, "stale-cache-interval", 0*time.Minute, "The interval to keep auth request review result for in case of unconsciousness of apiserver.")
+	flagset.DurationVar(&cfg.staleCacheTTL, "stale-cache-interval", 0*time.Minute, "The interval to keep auth request review result for in case of unconsciousness of apiserver.")
 	flagset.StringArrayVar(&cfg.excludePaths, "exclude-path", []string{}, "Path to skip authentication and authorizations checks for. May be necessary to describe liveness and readiness probe endpoints.")
 
 	// TLS flags
